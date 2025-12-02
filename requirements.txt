@@ -1,0 +1,9 @@
+# requirements.txt
+torch
+torchvision
+numpy
+opencv-python
+matplotlib
+segment-anything
+transformers
+Pillow
