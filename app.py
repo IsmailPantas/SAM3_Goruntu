@@ -1,6 +1,7 @@
 # app.py
 from model_loader import load_sam_model, get_segmentation_masks
 from utils import read_image, display_results
+from generator import load_generator_pipeline, generate_redesign_image  # YENİ IMPORT
 import os
 
 
@@ -25,8 +26,7 @@ def get_clean_labels(classified_objects):
     for obj in classified_objects:
         label = obj['label']
 
-        # Kontrol: Etiket, bizim anlamlı kabul ettiğimiz Türkçe listede var mı?
-        if label in ANLAMLI_ETIKETLER:
+        if label in ANLAMLI_ETIKETLER and label not in ['Sınıflandırılamadı', 'Çok Küçük Nesne', 'Model Hatası']:
             clean_objects.append(obj)
 
     return clean_objects
@@ -39,7 +39,8 @@ def initial_analysis_and_suggestion(classified_objects):
         print("Görüntüde nesne tespit edilemedi.")
         return
 
-    labels = [obj['label'] for obj in classified_objects]
+    labels = [obj['label'] for obj in classified_objects if
+              obj['label'] not in ['Sınıflandırılamadı', 'Çok Küçük Nesne', 'Model Hatası']]
     label_counts = {item: labels.count(item) for item in set(labels)}
 
     print(f"Analiz: Odada {len(labels)} anlamlı nesne tespit edildi.")
@@ -56,21 +57,33 @@ def initial_analysis_and_suggestion(classified_objects):
     print("--------------------------------------\n")
 
 
-def redesign_and_search_items(classified_objects):
-    """Kullanıcının prompt'una göre yeniden tasarımı simüle eder ve eşya arama linklerini sunar."""
+def redesign_and_search_items(classified_objects, original_image_np):
+    """Kullanıcının prompt'una göre yeniden tasarımı yapar ve eşya arama linklerini sunar."""
     print("\n--- Yeniden Tasarım ve Eşya Arama ---")
 
-    print("Adım 1: Kullanıcı Prompt'u Alındı (Örn: 'Duvar rengini mavi yap, halıyı değiştir.')")
-    print("Adım 2: Yeni Tasarım Görseli Oluşturuluyor (Generative AI)...")
-    # BURADA GENERATIVE AI ENTEGRASYONU YAPILACAKTIR.
+    # 1. Kullanıcıdan prompt alımı
+    user_prompt = input(
+        "Lütfen yeni tasarım için promptunuzu girin (Örn: modern minimalist koltuklar, beyaz duvarlar): ")
 
-    # 3. Eşya Arama (Uygulamanın en büyük farkı)
-    print("\nAdım 3: Yeni Tasarımda Kullanılan Ürünler İçin Yönlendirme Linkleri:")
+    # 2. Generative AI ile yeniden tasarım
+    print("\nAdım 2: Yeni Tasarım Görseli Oluşturuluyor (Stable Diffusion)...")
 
-    if 'lamba' in [obj['label'] for obj in classified_objects]:
-        print("* **Modern Sarkıt Lamba:** 'Modern Sarkıt Lamba' için arama [Link E-Ticaret/Arama Motoru URL'si]")
+    # generate_redesign_image'a temizlenmiş nesne listesi ve orijinal görüntü gönderiliyor
+    redesigned_image_pil = generate_redesign_image(original_image_np, classified_objects, user_prompt)
 
-    print("* **Turkuaz Mavi Duvar Boyası:** 'Turkuaz iç cephe boyası' için arama [Link Yapı Market URL'si]")
+    if redesigned_image_pil:
+        redesigned_image_pil.show()
+        print("Yeniden tasarlanmış görüntü gösterildi.")
+    else:
+        print("Yeniden tasarım başarısız oldu.")
+
+    # 3. Eşya Arama (Placeholder)
+    print("\nAdım 3: Yeni Tasarımda Kullanılan Ürünler İçin Yönlendirme Linkleri (Simülasyon):")
+
+    # Örnek Arama (Kullanıcının girdiği prompt'a göre)
+    if 'koltuk' in [obj['label'] for obj in classified_objects]:
+        print(f"* **{user_prompt.split(',')[0]} Mobilyalar:** Arama linki: [E-Ticaret/Arama Motoru URL'si]")
+
     print("-----------------------------------\n")
 
 
@@ -78,11 +91,14 @@ def redesign_and_search_items(classified_objects):
 
 def main():
     """Uygulamanın ana akışını çalıştırır."""
-    test_image_path = "test_oda_fotografi2.jpg"
+    test_image_path = "test_oda_fotografi.jpg"
 
     try:
         input_image = read_image(test_image_path)
         print(f"Görüntü okundu: {test_image_path}")
+
+        # Generative AI Pipeline'ını yükle (Ağırlık indirilecektir)
+        load_generator_pipeline()
 
         sam_model = load_sam_model()
         if sam_model is None:
@@ -90,13 +106,15 @@ def main():
 
         classified_objects = get_segmentation_masks(input_image, sam_model)
 
-        # Temizlik ve Filtreleme
         final_clean_objects = get_clean_labels(classified_objects)
 
-        display_results(input_image, final_clean_objects, "Tespit Edilen Nesneler ve Etiketler (Temizlenmiş)")
+        # Görselleştirme (Sınıflandırılamadı etiketlerinin de görünmesi için tüm listeyi kullanıyoruz)
+        display_results(input_image, classified_objects, "Tespit Edilen Nesneler ve Etiketler (Temizlenmiş)")
 
         initial_analysis_and_suggestion(final_clean_objects)
-        redesign_and_search_items(final_clean_objects)
+
+        # Orijinal görüntüyü yeniden tasarım fonksiyonuna gönderiyoruz
+        redesign_and_search_items(final_clean_objects, input_image)
 
     except FileNotFoundError as e:
         print(f"\nHATA: {e}")

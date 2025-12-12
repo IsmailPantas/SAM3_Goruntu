@@ -7,3 +7,9 @@ matplotlib
 segment-anything
 transformers
 Pillow
+accelerate
+datasets
+scikit-learn
+# Generative AI için yeni eklenenler
+diffusers
+safetensors
