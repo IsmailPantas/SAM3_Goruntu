@@ -91,7 +91,7 @@ def redesign_and_search_items(classified_objects, original_image_np):
 
 def main():
     """Uygulamanın ana akışını çalıştırır."""
-    test_image_path = "test_oda_fotografi.jpg"
+    test_image_path = "test_oda_fotografi2.jpg"
 
     try:
         input_image = read_image(test_image_path)
