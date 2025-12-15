@@ -1,11 +1,12 @@
-# generator.py
+# generator.py (OPTİMİZASYONLU VE DÜZELTİLMİŞ VERSİYON)
 import torch
 import numpy as np
 from PIL import Image
 from diffusers import StableDiffusionInpaintPipeline
 import os
 import re
-from classifier import TRANSLATION_DICT  # ViT etiket sözlüğünden faydalanmak için import edildi
+from classifier import TRANSLATION_DICT
+import cv2  # Maske Dilasyonu için OpenCV kütüphanesini import ettik!
 
 # --------------------------------------------------------------------------
 # GLOBAL TANIMLAMALAR
@@ -13,7 +14,11 @@ from classifier import TRANSLATION_DICT  # ViT etiket sözlüğünden faydalanma
 
 MODEL_ID = "runwayml/stable-diffusion-inpainting"
 
-# Cihaz belirleme: CUDA yoksa MPS (Apple Silicon GPU) kullan, o da yoksa CPU kullan.
+# Inpainting optimizasyon hiperparametreleri
+CFG_SCALE = 9.5  # Prompt'a sadakat seviyesi (7-8'den 9.5'e yükseltildi)
+MASK_DILATION_SIZE = 15  # Yapısal maskeyi kaç piksel genişleteceğimiz (10-20 arası ideal)
+
+# Cihaz belirleme
 if torch.cuda.is_available():
     DEVICE = "cuda"
 elif torch.backends.mps.is_available():
@@ -30,7 +35,7 @@ def load_generator_pipeline():
     print(f"\nGenerative AI (Inpainting) modeli yükleniyor... ({MODEL_ID})")
 
     try:
-        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+        dtype = torch.float32
 
         inpainting_pipeline = StableDiffusionInpaintPipeline.from_pretrained(
             MODEL_ID,
@@ -48,21 +53,16 @@ def load_generator_pipeline():
 def create_redesign_prompt(classified_objects, user_prompt):
     """
     Kullanıcı prompt'u ve tespit edilen nesneleri birleştirerek Stable Diffusion için
-    detaylı ve 77 token sınırına uygun bir Inpainting prompt'u oluşturur.
+    detaylı bir Inpainting prompt'u oluşturur.
     """
-
     present_objects = set()
 
     for obj in classified_objects:
-        # Anlamsız etiketleri prompt'a katmamak için filtreleme
         if obj['label'] not in ['Sınıflandırılamadı', 'Çok Küçük Nesne', 'Model Hatası']:
             present_objects.add(obj['label'])
 
-            # --- 1. Prompt'u Oluşturma (Kısa ve Öz) ---
-
     style_part = f"interior design, {user_prompt}, cinematic light, photorealistic"
 
-    # 2. Odanın Mevcut İçeriği (Modelin bağlamı korumasına yardımcı olur)
     object_list = ", ".join(list(present_objects))
     context_part = f"interior scene with {object_list}"
 
@@ -75,23 +75,18 @@ def create_redesign_prompt(classified_objects, user_prompt):
 
 def find_largest_structural_mask(classified_objects):
     """
-    Duvar ve zemin etiketleri güvenilir değilse, en büyük iki maskeyi bulur
-    ve bu maskelerin 'duvar' veya 'zemin' olma olasılığı en yüksektir.
+    Duvar ve zemin etiketleri güvenilir değilse, en büyük iki maskeyi bulur.
     """
     structural_labels = set(TRANSLATION_DICT.values()).intersection({'duvar', 'zemin', 'tavan'})
 
-    # Sadece büyük maskeleri tut
     large_masks = []
     for obj in classified_objects:
-        # Sadece sınıflandırılamamış veya yapısal (duvar, zemin, tavan) olarak etiketlenmiş büyük maskelere odaklan
-        if obj['label'] in ['Sınıflandırılamadı', 'Çok Küçük Nesne'] or obj['label'] in structural_labels:
+        if obj['label'] in ['Sınıflandırılamadı', 'boş alan'] or obj['label'] in structural_labels:
             large_masks.append((obj['area'], obj['mask'], obj))
 
-    # Alan büyüklüğüne göre sırala (en büyüğü en başta)
     large_masks.sort(key=lambda x: x[0], reverse=True)
 
-    # En büyük 3 maskenin (Duvar/Zemin/Tavan olma ihtimali yüksek) maske ve orijinal objelerini döndür
-    return large_masks[:3]  # En büyük 3 maskeyi al
+    return large_masks[:3]
 
 
 def generate_redesign_image(original_image_np, classified_objects, user_prompt):
@@ -108,10 +103,7 @@ def generate_redesign_image(original_image_np, classified_objects, user_prompt):
     combined_mask_np = np.zeros((H, W), dtype=bool)
     objects_to_change = set()
 
-    # Varsayılan değiştirilebilir nesneler (Mobilyalar)
     CHANGEABLE_OBJECTS = ['koltuk', 'kanepe', 'sandalye', 'masa', 'halı', 'lamba', 'dolap', 'puf', 'yatak', 'komodin']
-
-    # YENİ VE KRİTİK MANTIK: Duvar/Zemin İsteklerini Zorlama
     prompt_lower = user_prompt.lower()
 
     is_wall_requested = any(
@@ -125,24 +117,32 @@ def generate_redesign_image(original_image_np, classified_objects, user_prompt):
         for area, mask, obj in largest_masks_info:
             current_label = obj['label']
 
-            # Duvar veya Zemin istenmişse ve maske henüz maskelenmemişse
-            if (is_wall_requested and current_label in ['duvar', 'Sınıflandırılamadı']) or \
-                    (is_floor_requested and current_label in ['zemin', 'Sınıflandırılamadı']):
+            if (is_wall_requested and current_label in ['duvar', 'Sınıflandırılamadı', 'boş alan']) or \
+                    (is_floor_requested and current_label in ['zemin', 'Sınıflandırılamadı', 'boş alan']):
 
-                # Maskeyi birleştir ve etiketi zorla ekle
-                combined_mask_np = np.logical_or(combined_mask_np, mask)
+                # MASK DİLASYONU (Genişletme) UYGULANIYOR!
+                kernel = np.ones((MASK_DILATION_SIZE, MASK_DILATION_SIZE), np.uint8)
+                # bool maskeyi uint8'e çevir
+                mask_uint8 = mask.astype(np.uint8) * 255
+                dilated_mask = cv2.dilate(mask_uint8, kernel, iterations=1)
+                dilated_mask_bool = dilated_mask.astype(bool)
 
-                if is_wall_requested:
+                # 1. Maskeyi birleştir (genişletilmiş maske ile)
+                combined_mask_np = np.logical_or(combined_mask_np, dilated_mask_bool)
+
+                # 2. Etiketi objects_to_change setine ekle
+                if is_wall_requested and 'duvar' not in objects_to_change:
                     objects_to_change.add('duvar')
-                elif is_floor_requested:
+                if is_floor_requested and 'zemin' not in objects_to_change:
                     objects_to_change.add('zemin')
 
-                # Bu maske zaten zorla eklendiği için mobilya döngüsüne girmeye gerek yok
+                # Sadece en büyük maskeyi aldıktan sonra diğer yapısal maskeleri almayı durdur
+                if is_wall_requested or is_floor_requested:
+                    break  # En büyük (muhtemelen duvar) maskeyi aldıktan sonra döngüden çık
 
-    # Mobilya maskelerini birleştirme
+    # Mobilya maskelerini birleştirme (genişletme yapılmaz)
     for obj in classified_objects:
         if obj['label'] in CHANGEABLE_OBJECTS:
-            # Maske zaten yapısal override ile eklenmiş olabilir, tekrar ekleme zararsızdır
             combined_mask_np = np.logical_or(combined_mask_np, obj['mask'])
             objects_to_change.add(obj['label'])
 
@@ -159,7 +159,7 @@ def generate_redesign_image(original_image_np, classified_objects, user_prompt):
 
     # --- 3. Görüntü Oluşturma (Inpainting) ---
 
-    print(f"\n--- Generative AI İşlemi Başlatılıyor ---")
+    print(f"\n--- Generative AI İşlemi Başlatılıyor (CFG: {CFG_SCALE}, Dilasyon: {MASK_DILATION_SIZE}px) ---")
     print(f"Maskelenenler: {', '.join(objects_to_change)}")
     print(f"Nihai Prompt: {full_prompt[:120]}...")
 
@@ -170,7 +170,9 @@ def generate_redesign_image(original_image_np, classified_objects, user_prompt):
             prompt=full_prompt,
             image=image,
             mask_image=mask_image,
-            negative_prompt="bad quality, blurry, noise, distortions, disfigured, monochrome, cartoon, painting",
+            # CFG_SCALE Kullanılıyor
+            guidance_scale=CFG_SCALE,
+            negative_prompt="bad quality, blurry, noise, distortions, disfigured, monochrome, cartoon, painting, changed perspective, changed furniture location",
             num_inference_steps=50,
             generator=generator
         )
