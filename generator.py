@@ -6,7 +6,7 @@ from diffusers import StableDiffusionInpaintPipeline
 import os
 import re
 from classifier import TRANSLATION_DICT
-import cv2  # Maske Dilasyonu için OpenCV kütüphanesini import ettik!
+import cv2
 
 # --------------------------------------------------------------------------
 # GLOBAL TANIMLAMALAR

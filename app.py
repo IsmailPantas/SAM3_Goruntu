@@ -1,7 +1,7 @@
 # app.py
 from model_loader import load_sam_model, get_segmentation_masks
 from utils import read_image, display_results
-from generator import load_generator_pipeline, generate_redesign_image  # YENİ IMPORT
+from generator import load_generator_pipeline, generate_redesign_image
 import os
 
 
