@@ -139,8 +139,7 @@ SAM3_Goruntu/
 ---
 
 ## Lisans & Katkı
-
-- MIT Lisansı önerilir — dilediğiniz lisansı ekleyin.  
+  
 - Katkı için `CONTRIBUTING.md` oluşturabilirsiniz.
 
 ---
